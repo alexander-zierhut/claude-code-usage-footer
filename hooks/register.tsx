@@ -28,6 +28,27 @@ const LIVE_MS = 5 * 60_000
 const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage'
 /** The footer row's left side ("auto mode on (shift+tab to cycle) · esc to interrupt") and the gap. */
 const LEFT_COLS = 60
+/** The mode label in front of the hint ("⏵⏵ auto mode on "), for when the hint's own length is known. */
+const MODE_COLS = 20
+/** How often a text selection is checked; while one is active the row steps aside for the copy hint. */
+const SELECTION_MS = 500
+
+// Engine-side facts the footer adapts to. Module state: they are per process and need no store.
+let hintCols = 0
+let selecting = false
+
+/** Visible length of every string in the hint's props: an upper bound on what the left side shows. */
+const textCols = (v: unknown): number =>
+  typeof v === 'string' ? [...v].length
+    : Array.isArray(v) ? v.reduce((n: number, x) => n + textCols(x), 0)
+    : v && typeof v === 'object' ? Object.values(v).reduce((n: number, x) => n + textCols(x), 0)
+    : 0
+
+/** Columns left for the footer: the viewport minus the left side, measured when the hint tells us. */
+export const roomFor = (columns: number, hint: number): number => columns - Math.max(LEFT_COLS, MODE_COLS + hint + 3)
+
+/** Widths of the three layouts, wide to short, for a number of usage windows (the cache included). */
+export const widths = (windows: number): [number, number, number] => [windows * 23 + 32, windows * 17 + 22, windows * 9 + 14]
 
 const windows = atom({ plugin: 'usage-footer', key: 'windows' } as const, [] as Window[])
 const cache = atom({ plugin: 'usage-footer', key: 'cache' } as const, null as CacheFacts | null)
@@ -147,6 +168,19 @@ export const register: Register = on => {
     $.clock.every(TICK_MS, () => $.ui.invalidate('ui.render'))
     void live($)
     $.clock.every(LIVE_MS, () => live($))
+    $.clock.every(SELECTION_MS, async () => {
+      let now = false
+      try {
+        const sel = await $.ui.selection()
+        now = typeof sel === 'string' ? sel.length > 0 : !!sel
+      } catch {
+        now = false
+      }
+      if (now !== selecting) {
+        selecting = now
+        await $.ui.invalidate('ui.render')
+      }
+    })
     return next(e)
   })
 
@@ -206,13 +240,16 @@ export const register: Register = on => {
     const list = await read($, windows)
     const now = await $.clock.now()
     const view = viewOf(await read($, cache), now)
-    if (list.length === 0 && !view) return next(e)
+    if ((list.length === 0 && !view) || selecting) return next(e)
     const engine = await next(e)
     const { Box, Text } = $.ui.resolve(e)
     // Three widths: "7D 44% left · 3d 10h", "7D 44% · 3d 10h", "7D 44%"; the cache keeps its price in all.
-    const room = (e.viewport?.columns ?? 200) - LEFT_COLS
-    const full = (list.length * 23 + 32) <= room
-    const mid = !full && (list.length * 17 + 22) <= room
+    // Never wrap the footer: shorten, and when even the short form does not fit, step aside.
+    const room = roomFor(e.viewport?.columns ?? 200, hintCols)
+    const [wFull, wMid, wShort] = widths(list.length)
+    if (wShort > room) return engine
+    const full = wFull <= room
+    const mid = !full && wMid <= room
     const segs = list.map((w, i) => {
       const left = Math.max(0, Math.round((100 - w.percentUsed) * 10) / 10)
       const col = tone(COLORS[w.kind] ?? TEXT, strengthOf(w.percentUsed))
@@ -253,6 +290,20 @@ export const register: Register = on => {
         </Box>
       </Box>
     )
+  })
+
+  // The hint on the footer's left grows (a copy hint, "esc to interrupt", ...): note its length, draw nothing.
+  on('ui.render', { component: 'PromptHint' }, async ($, e, next) => {
+    if (e.surface === 'terminal') {
+      // Only the hint itself when it is named: other props can carry the draft you are typing.
+      const props = e.props as Record<string, unknown>
+      const cols = 'hint' in props ? textCols(props.hint) : textCols(props)
+      if (cols !== hintCols) {
+        hintCols = cols
+        await $.ui.invalidate('ui.render')
+      }
+    }
+    return next(e)
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {

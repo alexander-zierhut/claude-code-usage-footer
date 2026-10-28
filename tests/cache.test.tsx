@@ -233,3 +233,49 @@ test('the footer has no background and its colours grow from gray as a window fi
   expect(JSON.stringify(await foot.findAll({ type: 'Box' }))).not.toContain('backgroundColor')
   await foot.unmount()
 })
+
+test('the footer never wraps: it steps aside while text is selected, for a long hint, or when nothing fits', async ($, on) => {
+  mock.store(on)
+  const clock = mock.clock(on, { now: NOW })
+  let selection = ''
+  on('session.start', ($, e) => ({ cwd: e.cwd }))
+  on('session.usage', () => ({ value: { startedAt: 0, context: { window: 1000000 }, rateLimits: WINDOWS } }))
+  on('ui.selection', () => ({ value: selection }))
+  on('ui.render', ($, e) => {
+    const { Text } = $.ui.resolve(e)
+    return <Text>engine</Text>
+  })
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  const at = (columns: number) => $.ui.mount({ plugin: 'usage-footer', surface: 'terminal', component: 'SessionMode', props: { modes: [] }, viewport: { columns, rows: 40 } })
+
+  let foot = await at(200)
+  expect(await foot.find({ text: '82% left' })).toBeDefined()
+  await foot.unmount()
+
+  // Selecting text: the row steps aside, and comes back once the selection is gone.
+  selection = 'some copied text'
+  await clock.advance(600)
+  foot = await at(200)
+  expect(await foot.find({ text: '82% left' })).toBeUndefined()
+  expect(await foot.find({ text: 'engine' })).toBeDefined()
+  await foot.unmount()
+  selection = ''
+  await clock.advance(600)
+  foot = await at(200)
+  expect(await foot.find({ text: '82% left' })).toBeDefined()
+  await foot.unmount()
+
+  // Far too narrow even for the short form: only the engine's own label.
+  foot = await at(70)
+  expect(await foot.find({ text: '82%' })).toBeUndefined()
+  expect(await foot.find({ text: 'engine' })).toBeDefined()
+  await foot.unmount()
+
+  // A long hint on the left takes its real width: the wide form gives way to a shorter one.
+  const hint = await $.ui.mount({ plugin: 'usage-footer', surface: 'terminal', component: 'PromptHint', props: { hint: 'x'.repeat(100) } })
+  await hint.unmount()
+  foot = await at(200)
+  expect(await foot.find({ text: '82% left' })).toBeUndefined()
+  expect(await foot.find({ text: '82%' })).toBeDefined()
+  await foot.unmount()
+})
