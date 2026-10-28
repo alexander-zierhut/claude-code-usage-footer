@@ -37,6 +37,19 @@ const NAMES: Record<string, string> = { seven_day: '7D', five_hour: '5H', spend_
 const ORDER: Record<string, number> = { seven_day: 0, five_hour: 1 }
 const COLORS: Record<string, string> = { seven_day: ORANGE, five_hour: YELLOW }
 
+/** The footer's neutral: colours fade toward it while there is plenty of room. */
+const GRAY = '#808080'
+
+/** `hex` mixed with GRAY: 0 is plain gray, 1 the full colour. */
+export const tone = (hex: string, strength: number): string => {
+  const k = Math.max(0, Math.min(1, strength))
+  const ch = (h: string, i: number) => parseInt(h.slice(1 + i * 2, 3 + i * 2), 16)
+  return '#' + [0, 1, 2].map(i => Math.round(ch(GRAY, i) + (ch(hex, i) - ch(GRAY, i)) * k).toString(16).padStart(2, '0')).join('')
+}
+
+/** How strongly a window shows: mostly gray under half used, full colour from 95% used. */
+export const strengthOf = (percentUsed: number): number => 0.2 + 0.8 * Math.max(0, Math.min(1, (percentUsed - 50) / 45))
+
 const clean = (list: readonly Window[]): Window[] =>
   list
     .map(w => ({ kind: w.kind, percentUsed: w.percentUsed, resetsAt: w.resetsAt }))
@@ -202,14 +215,14 @@ export const register: Register = on => {
     const mid = !full && (list.length * 17 + 22) <= room
     const segs = list.map((w, i) => {
       const left = Math.max(0, Math.round((100 - w.percentUsed) * 10) / 10)
-      const col = COLORS[w.kind] ?? TEXT
+      const col = tone(COLORS[w.kind] ?? TEXT, strengthOf(w.percentUsed))
       const reset = full || mid ? fmtReset(w.resetsAt, now) : ''
       return (
         <Box key={`w-${i}`} flexDirection="row" flexShrink={0} marginRight={full ? 3 : 2}>
-          <Text color={MUTED} bold>{NAMES[w.kind] ?? w.kind.toUpperCase()} </Text>
-          <Text color={col} bold>{full ? `${left}% left` : `${Math.round(left)}%`}</Text>
-          {left < LOW_AT ? <Text color={TEXT} bold> LOW</Text> : null}
-          {reset ? <Text color={MUTED}> · {reset}</Text> : null}
+          <Text dimColor>{NAMES[w.kind] ?? w.kind.toUpperCase()} </Text>
+          <Text color={col} bold={left < LOW_AT}>{full ? `${left}% left` : `${Math.round(left)}%`}</Text>
+          {left < LOW_AT ? <Text color={col} bold> LOW</Text> : null}
+          {reset ? <Text dimColor> · {reset}</Text> : null}
         </Box>
       )
     })
@@ -219,20 +232,22 @@ export const register: Register = on => {
       const mine = mineModel(view)
       const price = mine ? costOf(mine, view.mode, view.tokens) : 0
       const mins = `${Math.max(0, TTL_MIN - view.idleMin)}m`
+      // Warm is the calm case and stays muted; cold is worth noticing before you send.
+      const hue = tone(HUE[view.mode], cold ? 0.85 : 0.35)
       tail = (
         <Box key="cache" flexDirection="row" flexShrink={0}>
-          <Text backgroundColor={HUE[view.mode]} color={INK} bold>{` ${WORD[view.mode]} `}</Text>
-          {full || mid ? <Text color={HUE[view.mode]} bold>{cold ? ` ${view.idle}${full ? ' idle' : ''}` : ` ${mins}${full ? ' left' : ''}`}</Text> : null}
-          {mine ? <Text color={MUTED}>{full || mid ? ' · ' : ' '}</Text> : null}
-          {mine ? <Text color={TEXT} bold>{usd(price)}</Text> : null}
-          {mine && full ? <Text color={MUTED}> next</Text> : null}
+          <Text color={hue} bold={cold}>{WORD[view.mode]}</Text>
+          {full || mid ? <Text color={hue}>{cold ? ` ${view.idle}${full ? ' idle' : ''}` : ` ${mins}${full ? ' left' : ''}`}</Text> : null}
+          {mine ? <Text dimColor>{full || mid ? ' · ' : ' '}</Text> : null}
+          {mine ? (cold ? <Text color={TEXT} bold>{usd(price)}</Text> : <Text dimColor>{usd(price)}</Text>) : null}
+          {mine && full ? <Text dimColor> next</Text> : null}
         </Box>
       )
     }
     return (
       <Box flexDirection="row" flexShrink={0}>
         {engine}
-        <Box key="ribbon" flexDirection="row" flexShrink={0} backgroundColor={BG} paddingX={1}>
+        <Box key="ribbon" flexDirection="row" flexShrink={0} marginLeft={1}>
           {segs}
           {tail}
         </Box>

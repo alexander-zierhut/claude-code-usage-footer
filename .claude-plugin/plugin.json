@@ -1,6 +1,6 @@
 {
   "name": "usage-footer",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Claude Code usage and prompt cache in the terminal footer: 5-hour and 7-day limits left with reset times, account-wide (all tabs and devices), plus whether the prompt cache is warm or cold and what the next message costs. Based on ribbon by Jay E (RoboNuggets).",
   "author": { "name": "Alexander Zierhut", "url": "https://github.com/alexander-zierhut" },
   "homepage": "https://github.com/alexander-zierhut/claude-code-usage-footer",

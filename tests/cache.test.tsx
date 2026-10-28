@@ -99,8 +99,8 @@ test('the terminal footer keeps the engine mode label and adds usage and cache s
   await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
 
   for (const [idle, chip, time, price] of [
-    [WARM_IDLE, ' WARM ', ' 42m left', '$0.15'],
-    [COLD_IDLE, ' COLD ', ' 3d 9h idle', '$6.16'],
+    [WARM_IDLE, 'WARM', ' 42m left', '$0.15'],
+    [COLD_IDLE, 'COLD', ' 3d 9h idle', '$6.16'],
   ] as const) {
     await $.classic.SessionStart({ source: 'resume', seconds_since_last_response: idle, context_tokens: 770000, model: 'claude-opus-5-5' })
     const foot = await $.ui.mount({ plugin: 'usage-footer', surface: 'terminal', component: 'SessionMode', props: { modes: ['auto'] } })
@@ -208,5 +208,28 @@ test('a narrow footer drops the words, then the reset times, but keeps the price
   expect(await foot.find({ text: '82%' })).toBeDefined()
   expect(await foot.find({ text: ' · 3h 29m' })).toBeUndefined()
   expect(await foot.find({ text: '$0.15' })).toBeDefined()
+  await foot.unmount()
+})
+
+test('the footer has no background and its colours grow from gray as a window fills', async ($, on) => {
+  mock.store(on)
+  mock.clock(on, { now: NOW })
+  on('session.start', ($, e) => ({ cwd: e.cwd }))
+  on('session.usage', () => ({ value: { startedAt: 0, context: { window: 1000000 }, rateLimits: [
+    { kind: 'five_hour', percentUsed: 10 },
+    { kind: 'seven_day', percentUsed: 95 },
+  ] } }))
+  on('ui.render', ($, e) => {
+    const { Text } = $.ui.resolve(e)
+    return <Text>engine</Text>
+  })
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  const foot = await $.ui.mount({ plugin: 'usage-footer', surface: 'terminal', component: 'SessionMode', props: { modes: [] } })
+  // 5H at 10% used: mostly gray. 7D at 95% used: the full orange, bold, LOW.
+  const colorOf = async (text: string) => (await foot.findAll({ type: 'Text' })).find(t => t.text === text)?.props.color
+  expect(await colorOf('90% left')).toBe('#97886d')
+  expect(await colorOf('5% left')).toBe('#ff6b1a')
+  expect(await foot.find({ text: ' LOW' })).toBeDefined()
+  expect(JSON.stringify(await foot.findAll({ type: 'Box' }))).not.toContain('backgroundColor')
   await foot.unmount()
 })

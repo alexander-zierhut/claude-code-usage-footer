@@ -34,11 +34,13 @@ Update with `claude plugin update usage-footer@claude-code-usage-footer`, remove
 
 | Part | Meaning |
 |---|---|
-| `7D 44% left · 3d 10h` | Share of the 7-day window left, and time until it resets (orange) |
-| `5H 88% left · 2h 20m` | Same for the 5-hour window (yellow). `LOW` appears under 15% |
+| `7D 44% left · 3d 10h` | Share of the 7-day window left, and time until it resets |
+| `5H 88% left · 2h 20m` | Same for the 5-hour window. `LOW` appears under 15% |
 | `WARM 58m left` | The prompt cache is live; minutes until it expires |
 | `COLD 2h 5m idle` | The cache expired; the next message re-sends the whole conversation |
 | `$0.05 next` | Estimated cost of the next message at API list prices (cheap when warm, full re-cache when cold) |
+
+The footer has no background and stays quiet while there is plenty of room: each window starts out mostly gray and turns orange (7D) or yellow (5H) as it fills, reaching full colour at 95% used. A warm cache is muted; a cold one stands out, together with its price.
 
 The footer gets shorter in narrow terminals instead of wrapping onto a second line:
 
@@ -58,6 +60,7 @@ In the desktop app, the VS Code extension and on mobile it keeps ribbon's drawn 
 - Works right after `--resume` or a plugin reload, without waiting for the first reply.
 - The next-message price is shown while the cache is warm too, not only when it is cold.
 - Width-aware footer with three layouts.
+- Calm colours in the footer: no background, and the usage colours grow from gray as a window fills up.
 
 ## Good to know
 
