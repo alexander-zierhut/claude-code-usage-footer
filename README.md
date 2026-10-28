@@ -67,6 +67,7 @@ In the desktop app, the VS Code extension and on mobile it keeps ribbon's drawn 
 - Prices are estimates at API list prices from the table in `hooks/cache-art.ts` (`MODELS`). A subscription is billed differently, so read them as a relative measure.
 - The live usage read uses Claude Code's own sign-in through `$.session.authorize()`. The plugin never reads or stores your token. With an API key, or in the desktop app (which does not lend its sign-in to plugins), it falls back to the figures the session itself reports.
 - The usage endpoint and the footer slot are not part of a documented public API, so a Claude Code update may change them. If the live read fails, the footer keeps working with the session's own figures.
+- Plugins cannot see how wide the left side of the footer is, so the footer keeps room for the longest hint that can appear there (in VS Code terminals that means it stays shorter than strictly needed). A request for Claude Code to tell plugins the free width, or to fit their text itself, is open as [anthropics/claude-code#105631](https://github.com/anthropics/claude-code/issues/105631). If it lands, the reserve goes away.
 - Subagents do not reset the cache clock; only the main conversation does.
 
 ## Develop
