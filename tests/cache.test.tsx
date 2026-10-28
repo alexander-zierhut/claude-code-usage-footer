@@ -184,33 +184,6 @@ test('the account usage is read live at start and every 5 minutes, so other devi
   expect(asked.length).toBe(2)
 })
 
-test('a narrow footer drops the words, then the reset times, but keeps the price', async ($, on) => {
-  mock.store(on)
-  mock.clock(on, { now: NOW })
-  on('session.start', ($, e) => ({ cwd: e.cwd }))
-  on('session.usage', () => ({ value: { startedAt: 0, context: { window: 1000000 }, rateLimits: WINDOWS } }))
-  on('classic.SessionStart', () => ({}))
-  on('ui.render', ($, e) => {
-    const { Text } = $.ui.resolve(e)
-    return <Text>engine</Text>
-  })
-  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
-  await $.classic.SessionStart({ source: 'resume', seconds_since_last_response: WARM_IDLE, context_tokens: 770000, model: 'claude-opus-5-5' })
-  const at = (columns: number) => $.ui.mount({ plugin: 'usage-footer', surface: 'terminal', component: 'SessionMode', props: { modes: [] }, viewport: { columns, rows: 40 } })
-
-  let foot = await at(120)
-  expect(await foot.find({ text: '82%' })).toBeDefined()
-  expect(await foot.find({ text: ' · 3h 29m' })).toBeDefined()
-  expect(await foot.find({ text: '$0.15' })).toBeDefined()
-  await foot.unmount()
-
-  foot = await at(100)
-  expect(await foot.find({ text: '82%' })).toBeDefined()
-  expect(await foot.find({ text: ' · 3h 29m' })).toBeUndefined()
-  expect(await foot.find({ text: '$0.15' })).toBeDefined()
-  await foot.unmount()
-})
-
 test('the footer has no background and its colours grow from gray as a window fills', async ($, on) => {
   mock.store(on)
   mock.clock(on, { now: NOW })
@@ -234,55 +207,59 @@ test('the footer has no background and its colours grow from gray as a window fi
   await foot.unmount()
 })
 
-test('the footer never wraps: it steps aside while text is selected, for a long hint, or when nothing fits', async ($, on) => {
+// The left side, worked out: mode label 37 + PR 12 + gap 2 = 51 columns outside VS Code.
+// The cache-warm row at its three levels is 64, 42 and 27 columns wide.
+const footerWorld = async ($: any, on: any, env: Record<string, string> = {}) => {
   mock.store(on)
-  const clock = mock.clock(on, { now: NOW })
-  let selection = ''
-  on('session.start', ($, e) => ({ cwd: e.cwd }))
+  mock.clock(on, { now: NOW })
+  on('session.start', ($: any, e: any) => ({ cwd: e.cwd }))
   on('session.usage', () => ({ value: { startedAt: 0, context: { window: 1000000 }, rateLimits: WINDOWS } }))
-  on('ui.selection', () => ({ value: selection }))
-  on('ui.render', ($, e) => {
+  on('classic.SessionStart', () => ({}))
+  on('env.get', (_: any, e: any) => ({ value: env[e.name] }))
+  on('ui.render', ($: any, e: any) => {
     const { Text } = $.ui.resolve(e)
     return <Text>engine</Text>
   })
   await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
-  const at = (columns: number) => $.ui.mount({ plugin: 'usage-footer', surface: 'terminal', component: 'SessionMode', props: { modes: [] }, viewport: { columns, rows: 40 } })
-
-  let foot = await at(200)
-  expect(await foot.find({ text: '82% left' })).toBeDefined()
-  await foot.unmount()
-
-  // Selecting text: the row steps aside for a few seconds, then comes back even though
-  // the engine keeps answering with the last selection.
-  selection = 'some copied text'
-  await clock.advance(600)
-  foot = await at(200)
-  expect(await foot.find({ text: '82% left' })).toBeUndefined()
+  await $.classic.SessionStart({ source: 'resume', seconds_since_last_response: WARM_IDLE, context_tokens: 770000, model: 'claude-opus-5-5' })
+  return (columns: number) => $.ui.mount({ plugin: 'usage-footer', surface: 'terminal', component: 'SessionMode', props: { modes: [] }, viewport: { columns, rows: 40 } })
+}
+const levelAt = async (at: (n: number) => Promise<any>, columns: number): Promise<string> => {
+  const foot = await at(columns)
+  const level = (await foot.find({ text: '82% left' })) ? 'full'
+    : (await foot.find({ text: ' · 3h 29m' })) ? 'mid'
+    : (await foot.find({ text: '82%' })) ? 'short' : 'hidden'
   expect(await foot.find({ text: 'engine' })).toBeDefined()
   await foot.unmount()
-  await clock.advance(5000)
-  foot = await at(200)
-  expect(await foot.find({ text: '82% left' })).toBeDefined()
-  await foot.unmount()
-  // A new selection hides it again.
-  selection = 'other text'
-  await clock.advance(600)
-  foot = await at(200)
-  expect(await foot.find({ text: '82% left' })).toBeUndefined()
-  await foot.unmount()
-  await clock.advance(5000)
+  return level
+}
 
-  // Far too narrow even for the short form: only the engine's own label.
-  foot = await at(70)
-  expect(await foot.find({ text: '82%' })).toBeUndefined()
-  expect(await foot.find({ text: 'engine' })).toBeDefined()
-  await foot.unmount()
+test('the footer takes the longest form whose exact text fits, and hides rather than wrap', async ($, on) => {
+  const at = await footerWorld($, on)
+  expect(await levelAt(at, 115)).toBe('full')
+  expect(await levelAt(at, 114)).toBe('mid')
+  expect(await levelAt(at, 93)).toBe('mid')
+  expect(await levelAt(at, 92)).toBe('short')
+  expect(await levelAt(at, 78)).toBe('short')
+  expect(await levelAt(at, 77)).toBe('hidden')
+})
 
-  // A long hint on the left takes its real width: the wide form gives way to a shorter one.
-  const hint = await $.ui.mount({ plugin: 'usage-footer', surface: 'terminal', component: 'PromptHint', props: { hint: 'x'.repeat(100) } })
+test('the room follows the left side: native-select hint in VS Code, esc to interrupt while working, a long hint', async ($, on) => {
+  const at = await footerWorld($, on, { TERM_PROGRAM: 'vscode' })
+  // The screenshot: 104 columns, "... · PR #247 · shift+click to native select" on the left.
+  expect(await levelAt(at, 104)).toBe('hidden')
+  expect(await levelAt(at, 120)).toBe('short')
+
+  // A turn runs: "esc to interrupt" joins the left side, and the row makes room at once.
+  const band = await $.ui.mount({ plugin: 'usage-footer', surface: 'terminal', component: 'AbovePrompt', props: { ...PROPS, isWorking: true } })
+  await band.unmount()
+  expect(await levelAt(at, 120)).toBe('hidden')
+  const idle = await $.ui.mount({ plugin: 'usage-footer', surface: 'terminal', component: 'AbovePrompt', props: { ...PROPS, isWorking: false } })
+  await idle.unmount()
+  expect(await levelAt(at, 120)).toBe('short')
+
+  // A long hint on the left takes its measured width.
+  const hint = await $.ui.mount({ plugin: 'usage-footer', surface: 'terminal', component: 'PromptHint', props: { hint: 'x'.repeat(40) } })
   await hint.unmount()
-  foot = await at(200)
-  expect(await foot.find({ text: '82% left' })).toBeUndefined()
-  expect(await foot.find({ text: '82%' })).toBeDefined()
-  await foot.unmount()
+  expect(await levelAt(at, 160)).toBe('short')
 })

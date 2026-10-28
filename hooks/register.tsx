@@ -26,24 +26,26 @@ const TICK_MS = 30_000
 /** How often the account's usage is read from Anthropic, so other tabs and devices show up. */
 const LIVE_MS = 5 * 60_000
 const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage'
-/** The footer row's left side ("auto mode on (shift+tab to cycle) · esc to interrupt") and the gap. */
-const LEFT_COLS = 60
-/** The mode label in front of the hint ("⏵⏵ auto mode on "), for when the hint's own length is known. */
-const MODE_COLS = 20
-/** How often the text selection is checked. */
-const SELECTION_MS = 500
-/**
- * How long the row steps aside after the selected text changes, for the copy hint. The
- * engine keeps answering with the last selection after it is gone, so a selection only
- * counts while it is new.
- */
-const SELECTION_HOLD_MS = 4000
+// The footer row's left side, built by Claude Code where plugins cannot measure it. Its
+// width is worked out from what can be known, sized for the longest it gets in this state:
+//   ⏵⏵ auto mode on (shift+tab to cycle) · PR #247 · esc to interrupt · shift+click to native select
+/** The mode label and its cycle hint. */
+const MODE_COLS = 37
+/** " · PR #1234": shown on a branch with a pull request; always kept free. */
+const PR_COLS = 12
+/** " · esc to interrupt", while a turn runs. */
+const WORKING_COLS = 19
+/** " · shift+click to native select", shown while text is selected in VS Code and xterm.js terminals. */
+const NATIVE_SELECT_COLS = 31
+/** " · ctrl+c to copy", shown while text is selected when copy-on-select is off. */
+const COPY_COLS = 17
+/** The gap between the two halves of the row. */
+const GAP_COLS = 2
 
 // Engine-side facts the footer adapts to. Module state: they are per process and need no store.
 let hintCols = 0
-let selecting = false
-let lastSelection = ''
-let selectedAt = 0
+let working = false
+let selectCols = 0
 
 /** Visible length of every string in the hint's props: an upper bound on what the left side shows. */
 const textCols = (v: unknown): number =>
@@ -52,11 +54,26 @@ const textCols = (v: unknown): number =>
     : v && typeof v === 'object' ? Object.values(v).reduce((n: number, x) => n + textCols(x), 0)
     : 0
 
-/** Columns left for the footer: the viewport minus the left side, measured when the hint tells us. */
-export const roomFor = (columns: number, hint: number): number => columns - Math.max(LEFT_COLS, MODE_COLS + hint + 3)
+/** Columns left for the footer: the viewport minus the longest the left side gets right now. */
+export const roomFor = (columns: number, left: { hint: number; working: boolean; select: number }): number =>
+  columns - (MODE_COLS + PR_COLS + (left.working ? WORKING_COLS : 0) + left.select + (left.hint > 0 ? left.hint + 3 : 0) + GAP_COLS)
 
-/** Widths of the three layouts, wide to short, for a number of usage windows (the cache included). */
-export const widths = (windows: number): [number, number, number] => [windows * 23 + 32, windows * 17 + 22, windows * 9 + 14]
+/** Room the selection hint can take in this terminal, so selecting text never pushes the row down. */
+const selectionHintCols = async ($: EngineInterface): Promise<number> => {
+  let cols = 0
+  try {
+    const term = (await $.env.get('TERM_PROGRAM')) ?? ''
+    if (term === 'vscode' || (await $.env.get('VSCODE_INJECTION')) || (await $.env.get('VSCODE_PID'))) cols += NATIVE_SELECT_COLS
+  } catch {
+    cols += NATIVE_SELECT_COLS // unknown terminal: keep the room
+  }
+  try {
+    if ((await $.settings.read({ key: 'copyOnSelect' })) === false) cols += COPY_COLS
+  } catch {
+    // the default copies on select: no copy hint
+  }
+  return cols
+}
 
 const windows = atom({ plugin: 'usage-footer', key: 'windows' } as const, [] as Window[])
 const cache = atom({ plugin: 'usage-footer', key: 'cache' } as const, null as CacheFacts | null)
@@ -170,31 +187,57 @@ const measure = async ($: EngineInterface, lastAt: number | null, model: string 
   }))
 }
 
+/** One run of footer text and how it is drawn. */
+type Part = { text: string; color?: string; dim?: boolean; bold?: boolean }
+
+/** Exact columns the parts take. */
+export const partsWidth = (parts: readonly Part[]): number => parts.reduce((n, p) => n + [...p.text].length, 0)
+
+/**
+ * The footer's text at a level of detail: 0 "7D 44% left · 3d 10h", 1 "7D 44% · 3d 10h",
+ * 2 "7D 44%". The cache keeps its price at every level. Built once for measuring and drawing.
+ */
+export const rowParts = (list: readonly Window[], view: CacheView | null, now: number, level: 0 | 1 | 2): Part[] => {
+  const full = level === 0
+  const mid = level === 1
+  const gap = full ? '   ' : '  '
+  const parts: Part[] = [{ text: ' ' }]
+  list.forEach((w, i) => {
+    const left = Math.max(0, Math.round((100 - w.percentUsed) * 10) / 10)
+    const color = tone(COLORS[w.kind] ?? TEXT, strengthOf(w.percentUsed))
+    const reset = full || mid ? fmtReset(w.resetsAt, now) : ''
+    if (i > 0) parts.push({ text: gap })
+    parts.push({ text: `${NAMES[w.kind] ?? w.kind.toUpperCase()} `, dim: true })
+    parts.push({ text: full ? `${left}% left` : `${Math.round(left)}%`, color, bold: left < LOW_AT })
+    if (left < LOW_AT) parts.push({ text: ' LOW', color, bold: true })
+    if (reset) parts.push({ text: ` · ${reset}`, dim: true })
+  })
+  if (view) {
+    const cold = view.mode === 'cold'
+    const mine = mineModel(view)
+    const price = mine ? costOf(mine, view.mode, view.tokens) : 0
+    const mins = `${Math.max(0, TTL_MIN - view.idleMin)}m`
+    // Warm is the calm case and stays muted; cold is worth noticing before you send.
+    const hue = tone(HUE[view.mode], cold ? 0.85 : 0.35)
+    if (list.length > 0) parts.push({ text: gap })
+    parts.push({ text: WORD[view.mode], color: hue, bold: cold })
+    if (full || mid) parts.push({ text: cold ? ` ${view.idle}${full ? ' idle' : ''}` : ` ${mins}${full ? ' left' : ''}`, color: hue })
+    if (mine) {
+      parts.push({ text: full || mid ? ' · ' : ' ', dim: true })
+      parts.push(cold ? { text: usd(price), color: TEXT, bold: true } : { text: usd(price), dim: true })
+      if (full) parts.push({ text: ' next', dim: true })
+    }
+  }
+  return parts
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await pull($)
     $.clock.every(TICK_MS, () => $.ui.invalidate('ui.render'))
     void live($)
     $.clock.every(LIVE_MS, () => live($))
-    $.clock.every(SELECTION_MS, async () => {
-      let text = lastSelection
-      try {
-        const sel = await $.ui.selection()
-        text = typeof sel === 'string' ? sel : sel ? JSON.stringify(sel) : ''
-      } catch {
-        // keep the last answer
-      }
-      const at = await $.clock.now()
-      if (text !== lastSelection) {
-        lastSelection = text
-        if (text) selectedAt = at
-      }
-      const now = text !== '' && at - selectedAt < SELECTION_HOLD_MS
-      if (now !== selecting) {
-        selecting = now
-        await $.ui.invalidate('ui.render')
-      }
-    })
+    selectCols = await selectionHintCols($)
     return next(e)
   })
 
@@ -254,53 +297,21 @@ export const register: Register = on => {
     const list = await read($, windows)
     const now = await $.clock.now()
     const view = viewOf(await read($, cache), now)
-    if ((list.length === 0 && !view) || selecting) return next(e)
+    if (list.length === 0 && !view) return next(e)
     const engine = await next(e)
     const { Box, Text } = $.ui.resolve(e)
-    // Three widths: "7D 44% left · 3d 10h", "7D 44% · 3d 10h", "7D 44%"; the cache keeps its price in all.
-    // Never wrap the footer: shorten, and when even the short form does not fit, step aside.
-    const room = roomFor(e.viewport?.columns ?? 200, hintCols)
-    const [wFull, wMid, wShort] = widths(list.length)
-    if (wShort > room) return engine
-    const full = wFull <= room
-    const mid = !full && wMid <= room
-    const segs = list.map((w, i) => {
-      const left = Math.max(0, Math.round((100 - w.percentUsed) * 10) / 10)
-      const col = tone(COLORS[w.kind] ?? TEXT, strengthOf(w.percentUsed))
-      const reset = full || mid ? fmtReset(w.resetsAt, now) : ''
-      return (
-        <Box key={`w-${i}`} flexDirection="row" flexShrink={0} marginRight={full ? 3 : 2}>
-          <Text dimColor>{NAMES[w.kind] ?? w.kind.toUpperCase()} </Text>
-          <Text color={col} bold={left < LOW_AT}>{full ? `${left}% left` : `${Math.round(left)}%`}</Text>
-          {left < LOW_AT ? <Text color={col} bold> LOW</Text> : null}
-          {reset ? <Text dimColor> · {reset}</Text> : null}
-        </Box>
-      )
-    })
-    let tail = null
-    if (view) {
-      const cold = view.mode === 'cold'
-      const mine = mineModel(view)
-      const price = mine ? costOf(mine, view.mode, view.tokens) : 0
-      const mins = `${Math.max(0, TTL_MIN - view.idleMin)}m`
-      // Warm is the calm case and stays muted; cold is worth noticing before you send.
-      const hue = tone(HUE[view.mode], cold ? 0.85 : 0.35)
-      tail = (
-        <Box key="cache" flexDirection="row" flexShrink={0}>
-          <Text color={hue} bold={cold}>{WORD[view.mode]}</Text>
-          {full || mid ? <Text color={hue}>{cold ? ` ${view.idle}${full ? ' idle' : ''}` : ` ${mins}${full ? ' left' : ''}`}</Text> : null}
-          {mine ? <Text dimColor>{full || mid ? ' · ' : ' '}</Text> : null}
-          {mine ? (cold ? <Text color={TEXT} bold>{usd(price)}</Text> : <Text dimColor>{usd(price)}</Text>) : null}
-          {mine && full ? <Text dimColor> next</Text> : null}
-        </Box>
-      )
-    }
+    // Never wrap the footer: take the longest of the three forms whose exact text fits, and
+    // step aside when even the short one does not.
+    const room = roomFor(e.viewport?.columns ?? 200, { hint: hintCols, working, select: selectCols })
+    const level = ([0, 1, 2] as const).find(l => partsWidth(rowParts(list, view, now, l)) <= room)
+    if (level === undefined) return engine
     return (
       <Box flexDirection="row" flexShrink={0}>
         {engine}
-        <Box key="ribbon" flexDirection="row" flexShrink={0} marginLeft={1}>
-          {segs}
-          {tail}
+        <Box key="ribbon" flexDirection="row" flexShrink={0}>
+          {rowParts(list, view, now, level).map((p, i) => (
+            <Text key={`p-${i}`} color={p.color} dimColor={p.dim} bold={p.bold}>{p.text}</Text>
+          ))}
         </Box>
       </Box>
     )
@@ -321,6 +332,11 @@ export const register: Register = on => {
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    // "esc to interrupt" joins the footer's left side while a turn runs: follow it at once.
+    if (e.surface === 'terminal' && !!e.props.isWorking !== working) {
+      working = !!e.props.isWorking
+      await $.ui.invalidate('ui.render')
+    }
     if (e.props.hasSurvey) return next(e)
 
     const ui = $.ui.resolve(e)
