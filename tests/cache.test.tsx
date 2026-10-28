@@ -252,18 +252,25 @@ test('the footer never wraps: it steps aside while text is selected, for a long 
   expect(await foot.find({ text: '82% left' })).toBeDefined()
   await foot.unmount()
 
-  // Selecting text: the row steps aside, and comes back once the selection is gone.
+  // Selecting text: the row steps aside for a few seconds, then comes back even though
+  // the engine keeps answering with the last selection.
   selection = 'some copied text'
   await clock.advance(600)
   foot = await at(200)
   expect(await foot.find({ text: '82% left' })).toBeUndefined()
   expect(await foot.find({ text: 'engine' })).toBeDefined()
   await foot.unmount()
-  selection = ''
-  await clock.advance(600)
+  await clock.advance(5000)
   foot = await at(200)
   expect(await foot.find({ text: '82% left' })).toBeDefined()
   await foot.unmount()
+  // A new selection hides it again.
+  selection = 'other text'
+  await clock.advance(600)
+  foot = await at(200)
+  expect(await foot.find({ text: '82% left' })).toBeUndefined()
+  await foot.unmount()
+  await clock.advance(5000)
 
   // Far too narrow even for the short form: only the engine's own label.
   foot = await at(70)

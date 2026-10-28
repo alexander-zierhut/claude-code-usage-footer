@@ -59,7 +59,7 @@ In the desktop app, the VS Code extension and on mobile it keeps ribbon's drawn 
 - Gentle polling: all open sessions share one reading through the plugin store, so several tabs together still ask about once every 5 minutes.
 - Works right after `--resume` or a plugin reload, without waiting for the first reply.
 - The next-message price is shown while the cache is warm too, not only when it is cold.
-- Width-aware footer with three layouts. It never breaks the footer onto a second line: it shortens as the left side grows, steps aside while you select text (so the copy hint has room), and hides when even the short form does not fit.
+- Width-aware footer with three layouts. It never breaks the footer onto a second line: it shortens as the left side grows, steps aside for a few seconds when you select text (so the copy hint has room), and hides when even the short form does not fit.
 - Calm colours in the footer: no background, and the usage colours grow from gray as a window fills up.
 
 ## Good to know

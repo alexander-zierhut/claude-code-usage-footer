@@ -30,12 +30,20 @@ const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage'
 const LEFT_COLS = 60
 /** The mode label in front of the hint ("⏵⏵ auto mode on "), for when the hint's own length is known. */
 const MODE_COLS = 20
-/** How often a text selection is checked; while one is active the row steps aside for the copy hint. */
+/** How often the text selection is checked. */
 const SELECTION_MS = 500
+/**
+ * How long the row steps aside after the selected text changes, for the copy hint. The
+ * engine keeps answering with the last selection after it is gone, so a selection only
+ * counts while it is new.
+ */
+const SELECTION_HOLD_MS = 4000
 
 // Engine-side facts the footer adapts to. Module state: they are per process and need no store.
 let hintCols = 0
 let selecting = false
+let lastSelection = ''
+let selectedAt = 0
 
 /** Visible length of every string in the hint's props: an upper bound on what the left side shows. */
 const textCols = (v: unknown): number =>
@@ -169,13 +177,19 @@ export const register: Register = on => {
     void live($)
     $.clock.every(LIVE_MS, () => live($))
     $.clock.every(SELECTION_MS, async () => {
-      let now = false
+      let text = lastSelection
       try {
         const sel = await $.ui.selection()
-        now = typeof sel === 'string' ? sel.length > 0 : !!sel
+        text = typeof sel === 'string' ? sel : sel ? JSON.stringify(sel) : ''
       } catch {
-        now = false
+        // keep the last answer
       }
+      const at = await $.clock.now()
+      if (text !== lastSelection) {
+        lastSelection = text
+        if (text) selectedAt = at
+      }
+      const now = text !== '' && at - selectedAt < SELECTION_HOLD_MS
       if (now !== selecting) {
         selecting = now
         await $.ui.invalidate('ui.render')
