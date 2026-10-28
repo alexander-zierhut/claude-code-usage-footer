@@ -1,0 +1,11 @@
+{
+  "name": "claude-code-usage-footer",
+  "owner": { "name": "Alexander Zierhut", "url": "https://github.com/alexander-zierhut" },
+  "plugins": [
+    {
+      "name": "usage-footer",
+      "source": "./",
+      "description": "Claude Code usage limits (5h / 7d, account-wide) and prompt cache warm/cold with next-message cost, in the terminal footer next to the mode indicator."
+    }
+  ]
+}
