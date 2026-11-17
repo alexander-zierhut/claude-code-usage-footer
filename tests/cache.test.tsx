@@ -138,6 +138,96 @@ test('a cleared session drops the cache until the next reply', async ($, on) => 
   await band.unmount()
 })
 
+test('an idle conversation is compacted once, 5 minutes before the cache goes cold', async ($, on) => {
+  mock.store(on)
+  const clock = mock.clock(on, { now: NOW })
+  let compactions = 0
+  let refuse = false
+  let configs: unknown = {}
+  on('session.start', ($, e) => ({ cwd: e.cwd }))
+  on('session.usage', () => ({ value: { startedAt: 0, context: { window: 1000000 }, rateLimits: WINDOWS } }))
+  on('classic.SessionStart', () => ({}))
+  on('settings.read', () => ({ value: { pluginConfigs: configs } }))
+  on('session.compact', () => {
+    if (refuse) throw new Error('a turn is running')
+    compactions += 1
+    return { skip: 'counted by the test' }
+  })
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  await $.classic.SessionStart({ source: 'resume', seconds_since_last_response: 50 * 60, context_tokens: 770000, model: 'claude-opus-5-5' })
+
+  // 54m 30s idle: 5m 30s of warm cache left, not yet.
+  await clock.advance(4.5 * 60_000)
+  expect(compactions).toBe(0)
+  // 55m idle: 5 minutes left, but a turn is still running (one long tool call): refused, asked again each tick.
+  refuse = true
+  await clock.advance(60_000)
+  expect(compactions).toBe(0)
+  refuse = false
+  await clock.advance(30_000)
+  expect(compactions).toBe(1)
+  // The same idle stretch is not compacted twice, warm or cold.
+  await clock.advance(10 * 60_000)
+  expect(compactions).toBe(1)
+
+  // Under 20 seconds before the expiry it is too late to start safely: never compact a cache that may be cold.
+  await $.classic.SessionStart({ source: 'resume', seconds_since_last_response: 59 * 60 + 45, context_tokens: 770000, model: 'claude-opus-5-5' })
+  await clock.advance(60_000)
+  expect(compactions).toBe(1)
+
+  // A turn that blocks until the cache is cold: the retries stop there.
+  refuse = true
+  await $.classic.SessionStart({ source: 'resume', seconds_since_last_response: 54 * 60, context_tokens: 770000, model: 'claude-opus-5-5' })
+  await clock.advance(6 * 60_000)
+  refuse = false
+  await clock.advance(5 * 60_000)
+  expect(compactions).toBe(1)
+
+  // The switch in the plugin's settings turns it off.
+  configs = { 'usage-footer@claude-code-usage-footer': { options: { auto_compact: false } } }
+  await $.classic.SessionStart({ source: 'resume', seconds_since_last_response: 56 * 60, context_tokens: 770000, model: 'claude-opus-5-5' })
+  await clock.advance(2 * 60_000)
+  expect(compactions).toBe(1)
+  configs = {}
+  await clock.advance(30_000)
+  expect(compactions).toBe(2)
+})
+
+test('Claude can ask for a compaction: it runs when the turn ends, then the follow-up prompt is sent', async ($, on) => {
+  mock.store(on)
+  const clock = mock.clock(on, { now: NOW })
+  const log: string[] = []
+  on('session.start', ($, e) => ({ cwd: e.cwd }))
+  on('session.usage', () => ({ value: { startedAt: 0, context: { window: 1000000 }, rateLimits: WINDOWS } }))
+  on('session.model', () => ({ value: 'claude-opus-5-5' }))
+  on('settings.read', () => ({ value: {} }))
+  on('tool.register', (_: any, e: any) => ({ value: { tool: `mcp__usage-footer__${e.name}` } }))
+  on('session.compact', (_: any, e: any) => {
+    log.push(`compact:${e.instructions ?? ''}`)
+    return { skip: 'counted by the test' }
+  })
+  on('prompt.submit', (_: any, e: any) => {
+    log.push(`submit:${e.text}`)
+    return { drop: 'counted by the test' }
+  })
+  on('turn.complete', (_: any, e: any) => ({ text: e.answer }))
+  on('tool.run', (_: any, e: any) => ({ result: 'BASE ' + JSON.stringify(e) }))
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  await clock.advance(1000)
+
+  // Another tool's call is passed on untouched.
+  expect(JSON.stringify(await $.tool.run({ tool: 'mcp__other__compact', input: {} }))).toContain('BASE')
+  const ran = await $.tool.run({ tool: 'mcp__usage-footer__compact', input: { instructions: 'keep the chapter list', then: 'Continue with chapter 4.' } })
+  expect(JSON.stringify(ran)).toContain('Compaction scheduled')
+  // Nothing happens while the turn runs.
+  expect(log).toEqual([])
+  await $.turn.complete({ answer: 'done', durationMs: 1000 })
+  expect(log).toEqual(['compact:keep the chapter list', 'submit:Continue with chapter 4.'])
+  // Once only.
+  await $.turn.complete({ answer: 'done', durationMs: 1000 })
+  expect(log.length).toBe(2)
+})
+
 
 test('the account usage is read live at start and every 5 minutes, so other devices show up', async ($, on) => {
   mock.store(on)

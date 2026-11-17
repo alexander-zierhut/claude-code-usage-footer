@@ -35,6 +35,19 @@ The list in the build: `AskUserQuestion, UserMessage, AssistantMessage, ToolUse,
 - `$.store` is per plugin and shared across sessions (used for the 5 minute shared poll). Signature: `$.store.get(key)`, `$.store.set(key, value)`.
 - Prompt cache: a cache read refreshes the 1 hour TTL at no cost, so the clock restarts at every main-thread request (`turn.step`, tool calls included). On API keys or in usage overage the TTL is 5 minutes, which the plugin does not detect (see upstream #99905 for exposing the status line's `prompt_cache` figures).
 
+## Compaction
+
+- `$.session.compact()` (optionally `{ instructions }`, a string) compacts the conversation like `/compact`. Found in 2.1.326.
+- It rejects while a turn is running ("the conversation compacts between turns, so call it from turn.complete or later"), when called from a hook that holds a turn, and when `DISABLE_COMPACT` is set.
+- A compaction asked for from `turn.complete` (after `next(e)`) runs; confirmed live. `$.prompt.submit({ text })` right after it starts the next turn, shown as "Prompt from the usage-footer plugin". A text starting with `/` is refused there.
+- `$.env.get` only takes a literal name; a constant holding the name stops the module from loading. `$.plugin` may only be used as `$.plugin.name` or `$.plugin.root`.
+
+## Tools and options
+
+- `$.tool.register({ name, description, inputSchema })` resolves to `{ tool }` with the full name, here `mcp__usage-footer__compact` (served by the engine's loopback MCP server). The call is answered by `on('tool.run', ...)` returning `{ result }` or `{ deny }`; the event carries `tool`, `input` and, for a subagent, `agentId`. In auto mode the call is allowed; otherwise it asks for permission like any MCP tool.
+- Plugin options: `userConfig` in `plugin.json` (`type`, `title`, `description`, `default`). Values live in the settings under `pluginConfigs["<name>@<marketplace>"].options` (`usage-footer@inline` with `--plugin-dir`); unset options are absent, so the code applies the default. `$.settings.read({ key: 'pluginConfigs' })` returns them. `$.process.hookEnv()` does not carry `CLAUDE_PLUGIN_OPTION_*`.
+- Test kit: answer it with `on('session.compact', () => ({ skip: '<reason>' }))`. The hook must return `{ messages }` (at least one) or `{ skip }`. `on(...)` stand-ins must be registered before the test first calls `$`. `settings.read` is answered with the whole settings object (`{ value: { pluginConfigs: ... } }`), `turn.complete` with `{ text }` and called with `{ answer, durationMs }`. Work the plugin starts without awaiting (the tool registration) needs a `clock.advance` before it has landed.
+
 ## Other call signatures used
 
 - `$.env.get(name)`, `$.settings.read({ key })`, `$.clock.every(ms, fn)`, `$.clock.now()`, `$.ui.invalidate('ui.render')`.

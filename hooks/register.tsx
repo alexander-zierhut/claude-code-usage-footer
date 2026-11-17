@@ -26,6 +26,10 @@ const TICK_MS = 30_000
 /** How often the account's usage is read from Anthropic, so other tabs and devices show up. */
 const LIVE_MS = 5 * 60_000
 const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage'
+/** An idle conversation is compacted when its warm cache has this long left, while reading it is still cheap. */
+const COMPACT_LEFT_MS = 5 * 60_000
+/** Too close to the expiry to still start: the request could arrive after the cache is gone (a laptop waking up, a late tick). */
+const COMPACT_MARGIN_MS = 20_000
 // The footer row's left side, built by Claude Code where plugins cannot measure it. Its
 // width is worked out from what can be known, sized for the longest it gets in this state:
 //   ⏵⏵ auto mode on (shift+tab to cycle) · PR #247 · esc to interrupt · shift+click to native select
@@ -46,6 +50,35 @@ const GAP_COLS = 2
 let hintCols = 0
 let working = false
 let selectCols = 0
+/** The request time an idle compaction already ran for: one compaction per idle stretch. */
+let compactedFor = 0
+/** The compact tool's full name once the engine has registered it. */
+let compactTool = ''
+/** A compaction Claude asked for through the tool, run when its turn has ended. */
+let asked: { instructions: string; then: string; tries: number } | null = null
+/** True while a compaction is under way: it can outlast a tick, and a second one must not start beside it. */
+let compacting = false
+/** How often a compaction Claude asked for is tried before the plugin gives up and carries on. */
+const ASKED_TRIES = 5
+
+/** The tool that lets Claude compact its own conversation. */
+const COMPACT_TOOL = {
+  name: 'compact',
+  description:
+    'Compact this conversation, like the user typing /compact: everything so far is replaced by a summary, which frees the context window. '
+    + 'Use it when the user asks you to compact, or at natural break points of long unattended work, for example after each finished step of a long orchestration, before the context fills up. '
+    + 'The compaction cannot run while you are working: it is scheduled and runs the moment your current turn ends, so call this as the last thing you do and then end your turn without further tool calls. '
+    + 'If work remains, put it in `then`: that text is sent to you as the next prompt right after the compaction, so you carry on without the user. Write it for a reader who only has the summary. '
+    + 'Only the main conversation can be compacted, not a subagent.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      instructions: { type: 'string', description: 'Optional. What the summary must keep (decisions, file paths, the remaining plan, the user\'s standing instructions).' },
+      then: { type: 'string', description: 'Optional. The prompt you receive right after the compaction, to continue the work. Leave it out to stop and wait for the user.' },
+    },
+    additionalProperties: false,
+  },
+} as const
 
 /** Visible length of every string in the hint's props: an upper bound on what the left side shows. */
 const textCols = (v: unknown): number =>
@@ -78,6 +111,19 @@ const selectionHintCols = async ($: EngineInterface): Promise<number> => {
 const windows = atom({ plugin: 'usage-footer', key: 'windows' } as const, [] as Window[])
 const cache = atom({ plugin: 'usage-footer', key: 'cache' } as const, null as CacheFacts | null)
 const fold = atom({ plugin: 'usage-footer', key: 'fold' } as const, null as Fold | null)
+
+/**
+ * One of the plugin's switches from /config (userConfig in plugin.json), on unless set to false.
+ * Read from the settings, where the plugin is listed under its name or name@marketplace.
+ */
+const optionOn = async ($: EngineInterface, key: 'auto_compact' | 'compact_tool'): Promise<boolean> => {
+  try {
+    const all = (await $.settings.read({ key: 'pluginConfigs' })) as Record<string, { options?: Record<string, unknown> }> | undefined
+    return !Object.entries(all ?? {}).some(([id, c]) => (id === 'usage-footer' || id.startsWith('usage-footer@')) && c?.options?.[key] === false)
+  } catch {
+    return true
+  }
+}
 
 const NAMES: Record<string, string> = { seven_day: '7D', five_hour: '5H', spend_limit: 'SPEND' }
 const ORDER: Record<string, number> = { seven_day: 0, five_hour: 1 }
@@ -170,6 +216,69 @@ const live = async ($: EngineInterface): Promise<boolean> => {
   }
 }
 
+/**
+ * True in the last COMPACT_LEFT_MS of a warm cache, up to COMPACT_MARGIN_MS before it expires:
+ * late enough to be idle, and always early enough that the compaction reads the cache while it
+ * is warm. Never true once the cache is cold.
+ */
+export const compactDue = (c: CacheFacts | null, now: number): boolean => {
+  if (!c || c.lastAt <= 0 || c.tokens <= 0) return false
+  const idleMs = now - c.lastAt
+  return idleMs >= TTL_MS - COMPACT_LEFT_MS && idleMs < TTL_MS - COMPACT_MARGIN_MS
+}
+
+/**
+ * Compacts the conversation once when it has sat idle until the cache is about to expire,
+ * so the summary is written from the warm cache and a later message re-sends little.
+ * A try the engine refuses (a turn is running) is repeated on the next tick while the cache is still warm.
+ */
+const compactIdle = async ($: EngineInterface): Promise<void> => {
+  if (compacting || asked) return
+  try {
+    const c = await read($, cache)
+    if (!c || c.lastAt === compactedFor || !compactDue(c, await $.clock.now())) return
+    if (compacting || !(await optionOn($, 'auto_compact'))) return
+    compacting = true
+    try {
+      await $.session.compact()
+      compactedFor = c.lastAt
+    } finally {
+      compacting = false
+    }
+  } catch {
+    // a turn is running, or compaction is switched off (DISABLE_COMPACT): the next tick asks again
+  }
+}
+
+/**
+ * Runs the compaction Claude asked for, then sends its follow-up prompt. Called when the main
+ * turn ends and again from the tick, because the engine only compacts between turns. When the
+ * compaction cannot run (ASKED_TRIES refusals, or an error that will not go away) it still
+ * sends the follow-up, so unattended work is not left hanging.
+ */
+const compactAsked = async ($: EngineInterface): Promise<void> => {
+  const a = asked
+  if (!a || compacting) return
+  compacting = true
+  try {
+    await $.session.compact(a.instructions ? { instructions: a.instructions } : undefined)
+  } catch (x) {
+    // Only "a turn is running" is worth waiting for; anything else (nothing to summarize, compaction switched off) will not change.
+    a.tries += 1
+    if (/turn/i.test(String(x)) && a.tries < ASKED_TRIES) return
+  } finally {
+    compacting = false
+  }
+  if (asked !== a) return
+  asked = null
+  if (!a.then) return
+  try {
+    await $.prompt.submit({ text: a.then })
+  } catch {
+    // the session is ending or prompts are held: nothing left to carry on with
+  }
+}
+
 const pull = async ($: EngineInterface): Promise<void> => {
   const u = await $.session.usage()
   await update($, windows, () => clean(u.rateLimits))
@@ -235,9 +344,19 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await pull($)
     $.clock.every(TICK_MS, () => $.ui.invalidate('ui.render'))
+    $.clock.every(TICK_MS, () => compactIdle($))
+    $.clock.every(TICK_MS, () => compactAsked($))
     void live($)
     $.clock.every(LIVE_MS, () => live($))
     selectCols = await selectionHintCols($)
+    // Not awaited: the engine takes a moment to list a new tool, and the session should not wait for it.
+    void (async () => {
+      try {
+        if (await optionOn($, 'compact_tool')) compactTool = (await $.tool.register(COMPACT_TOOL)).tool
+      } catch {
+        // this session takes no tools from plugins: /compact still works
+      }
+    })()
     return next(e)
   })
 
@@ -287,7 +406,23 @@ export const register: Register = on => {
     const lastAt = !c || now - c.lastAt > e.durationMs ? now : c.lastAt
     await measure($, lastAt, e.usage?.model ?? null)
     await pull($)
+    await compactAsked($)
     return r
+  })
+
+  // Claude asks for a compaction. A turn is running right now, so it is noted and run when the turn ends.
+  on('tool.run', async ($, e, next) => {
+    if (!compactTool || e.tool !== compactTool) return next(e)
+    if (e.agentId) return { deny: 'Only the main conversation can be compacted, not a subagent. Report back to the main conversation instead.' }
+    if (!(await optionOn($, 'compact_tool'))) return { deny: 'Compacting by tool is switched off in this plugin\'s settings (/config, "Let Claude compact").' }
+    const input = (e.input ?? e) as { instructions?: unknown; then?: unknown }
+    const instructions = typeof input.instructions === 'string' ? input.instructions.trim() : ''
+    const then = typeof input.then === 'string' ? input.then.trim() : ''
+    asked = { instructions, then, tries: 0 }
+    return {
+      result: 'Compaction scheduled. It runs as soon as this turn ends, so end your turn now without further tool calls. '
+        + (then ? 'Right after it you receive your follow-up prompt and continue from the summary.' : 'No follow-up prompt was given, so the session then waits for the user.'),
+    }
   })
 
   // Terminal footer: the engine's own mode label stays on the left, ribbon's text
