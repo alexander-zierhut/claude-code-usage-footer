@@ -1,6 +1,6 @@
 # Claude Code usage footer
 
-A Claude Code plugin that shows your plan usage and prompt cache state in the terminal footer, right next to the mode indicator:
+A Claude Code plugin that keeps your usage and your prompt cache in view, and keeps long sessions cheap. It shows your plan usage and cache state in the terminal footer, right next to the mode indicator, compacts conversations before their cache goes cold, and lets Claude compact on its own during long unattended work.
 
 ```
 ⏵⏵ auto mode on (shift+tab to cycle) · esc to interrupt     7D 44% left · 3d 10h   5H 88% left · 2h 20m   WARM  58m left · $0.05 next
@@ -9,8 +9,8 @@ A Claude Code plugin that shows your plan usage and prompt cache state in the te
 - How much of your 7-day and 5-hour usage is left, and when each window resets
 - Read for your whole account, so usage from other tabs, the desktop app, your phone or another laptop shows up too
 - Whether the prompt cache is warm or cold, and what your next message costs at API list prices
-- Compacts a conversation you left idle 5 minutes before its cache goes cold, so coming back to it later stays cheap
-- Gives Claude a tool to compact the conversation itself, so long unattended work can compact between steps and carry on
+- No more expensive cold starts: a conversation you left idle is compacted 5 minutes before its cache expires, so coming back to it later stays cheap
+- Unattended work that keeps going: Claude gets a tool to compact the conversation itself, so you can say "finish this, compact, then suspend the PC" or "compact after each chapter and continue" and walk away
 
 This version is built for the Claude Code CLI in the terminal. It is based on [ribbon](https://github.com/robonuggets/ribbon) by Jay E ([RoboNuggets](https://robonuggets.com)), a lovely band above the prompt whose drawn version is made for the desktop app. All the credit for the idea, the cache tracking and the pricing goes there.
 
