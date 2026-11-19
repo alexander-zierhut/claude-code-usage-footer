@@ -52,3 +52,9 @@ The list in the build: `AskUserQuestion, UserMessage, AssistantMessage, ToolUse,
 
 - `$.env.get(name)`, `$.settings.read({ key })`, `$.clock.every(ms, fn)`, `$.clock.now()`, `$.ui.invalidate('ui.render')`.
 - Test kit: `mock.store(on)`, `mock.clock(on, { now })` (with `.advance(ms)`), `$.ui.mount({ plugin, surface, component, props, viewport })`, `find`, `findAll`, `press`, `unmount`.
+
+## The "you haven't used this plugin lately" tip
+
+- Claude Code (seen in 2.1.328) suggests turning off a user-installed plugin whose last recorded use is 14 days and 10 startups old. The record is `pluginUsage` in `~/.claude.json`.
+- A use is recorded for: a classic hook from `hooks.json` running, a plugin skill, command or subagent being invoked, a call to the plugin's own MCP server, LSP activity. Module hooks (`ui.render`, `turn.step`, the tick) and tools from `$.tool.register` (served by the engine's loopback MCP server) record nothing, so a module-only plugin counts as never used.
+- That is why `hooks/hooks.json` carries a `SessionStart` command hook running `true` next to the module: it does nothing, but each session then counts as a use. Remove it once module hooks count on their own.

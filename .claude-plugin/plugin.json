@@ -1,6 +1,6 @@
 {
   "name": "usage-footer",
-  "version": "1.5.1",
+  "version": "1.5.2",
   "description": "See your Claude Code usage limits and prompt cache at a glance in the terminal footer, and stop paying for cold caches: idle conversations are compacted 5 minutes before the cache expires, and Claude gets a compact tool so long unattended work can compact between steps and carry on. Usage is account-wide (5-hour and 7-day, all tabs and devices), with the cost of your next message. Based on ribbon by Jay E (RoboNuggets).",
   "author": { "name": "Alexander Zierhut", "url": "https://github.com/alexander-zierhut" },
   "homepage": "https://github.com/alexander-zierhut/claude-code-usage-footer",
